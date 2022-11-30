@@ -1,3 +1,5 @@
+#!/bin/bash
+
 echo -e "\
 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>   gmx_mmpbsa   <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>    Jicun Li    <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
@@ -27,6 +29,8 @@ echo -e "\
 --------------------------------------------------------------------------------
 >> Log:
    TODO:       parallel APBS, focus
+   2022-11-31: fix issues protein group name starts with a number, the bug from gromacs
+               protein only bug
    2022-11-18: fix issues with non-continuous ndx
    2022-10-16: fix issue with ndx file
    2022-07-14: fix issues with Chinease in PBSAset
@@ -87,7 +91,7 @@ trjconv="$gmx trjconv -dt 1000"			# gmx trjconv, use -b -e -dt, NOT -skip
 converttpr="$gmx convert-tpr"			# to generate reduced tpr
 
 #apbs='/path/APBS/bin/apbs'				# APBS(Linux)
-apbs='E:/APBS1.5/apbs.exe'				# APBS(Windows), USE "/", NOT "\"
+apbs='D:/APBS1.5/bin/apbs.exe'			# APBS(Windows), USE "/", NOT "\"
 export MCSH_HOME=/dev/null				# APBS io.mc
 
 pid=pid				# 输出文件($$可免重复) prefix of the output files($$)
@@ -173,7 +177,7 @@ str=$($gmx --version | grep -i "GROMACS version")
 [[ $step -lt 3 && -z "$str" ]] && { echo -e "!!! ERROR !!!  GROMACS NOT available !\n"; exit; }
 
 str=$($apbs --version 2>&1 | grep -i "Poisson-Boltzmann")
-[[ -z "$str" ]] && { echo -e "!!! WARNING !!!  APBS NOT available !\n"; }
+[[ -z "$str" ]] && { echo -e "!!! ERROR !!!  APBS NOT available !\n"; exit; }
 
 ################################################################################
 # 解析命令行参数
@@ -219,6 +223,13 @@ str=$(grep "\[ *$lig *\]" "$ndx"); [[ -z "$str" && $withLig -eq 1 ]] && { echo -
 str=$(grep "\[ *$pro *\]" "$ndx" | wc -l); [[ $str -gt 1                   ]] && { echo -e "!!! ERROR !!! more than ONE [ $pro ] in $ndx !\n"; exit; }
 str=$(grep "\[ *$lig *\]" "$ndx" | wc -l); [[ $str -gt 1 && $withLig -eq 1 ]] && { echo -e "!!! ERROR !!! more than ONE [ $lig ] in $ndx !\n"; exit; }
 
+# we should check -pro group name, avoid name starts with a number, such as 3EBZ to __3EBZ
+if [[ ${pro::1} =~ [0-9] ]]; then
+    pro=__${pro}
+    [[ $withLig -eq 0 ]] && { com=$pro; lig=$pro; }
+    [[ $withLig -eq 1 ]] && { com=${pro}_${lig}; }
+fi
+
 if [[ $withLig -eq 1 ]]; then
 	awk -v pro=$pro -v lig=$lig '
 		BEGIN {i=-1; cp=""}
@@ -226,14 +237,18 @@ if [[ $withLig -eq 1 ]]; then
 			txt=$0;
 			sub(/ *\[ */, "", txt);
 			sub(/ *\].*/, "", txt)
+			# check __
+			if ("__"txt == pro) txt=pro
 			if(txt==pro || txt==lig) cp=cp" "i
 		}
 		END {
 			sub(/^ */, "", cp)
 			gsub(/ +/, "\n", cp)
-			print cp"\ndel 0-"i"\n0|1\nname 2 "pro"_"lig"\nq"
+			print cp"\ndel 0-"i"\nname 0 "pro"\n0|1\nname 2 "pro"_"lig"\nq"
 		}
 	' $ndx | $gmx make_ndx -f $tpr -n $ndx -o $idx &> $err
+else
+    cp $ndx $idx
 fi
 
 echo -e ">> 0. set up environments and parameters: OK !\n"
@@ -256,6 +271,9 @@ awk >$idx -v ndx=$ndx -v pro=$pro -v lig=$lig -v withLig=$withLig '
 	BEGIN { RS="["
 		while(getline < ndx) {
 			gsub(" ","", $1); gsub("\t","", $1)
+			# check __
+			if ("__"$1 == pro)    $1=pro
+			if ("__"$1 == pro"]") $1=pro"]"
 			if($1==pro)    { ipro=$3; npro=NF-2; }
 			if($1==pro"]") { ipro=$2; npro=NF-1; }
 			if(withLig) {
@@ -266,9 +284,12 @@ awk >$idx -v ndx=$ndx -v pro=$pro -v lig=$lig -v withLig=$withLig '
 		if(ipro<ilig) { dpro=0; dlig=npro }
 		else          { dlig=0; dpro=nlig }
 		print "[ "pro" ]";       for(i=1; i<=npro; i++)      printf "%d%s", i+dpro, i%15==0?"\n":" "; print ""
-		print "[ "lig" ]";       for(i=1; i<=nlig; i++)      printf "%d%s", i+dlig, i%15==0?"\n":" "; print ""
-		print "[ "pro"_"lig" ]"; for(i=1; i<=npro+nlig; i++) printf "%d%s", i,      i%15==0?"\n":" "; print ""
+		if (withLig) {
+            print "[ "lig" ]";       for(i=1; i<=nlig; i++)      printf "%d%s", i+dlig, i%15==0?"\n":" "; print ""
+            print "[ "pro"_"lig" ]"; for(i=1; i<=npro+nlig; i++) printf "%d%s", i,      i%15==0?"\n":" "; print ""
+		}
 	} '
+
 
 trjcnt=_$pid~trj_cnt.xtc; trjcls=_$pid~trj_cls.xtc
 if [[ $withLig -eq 1 ]]; then
@@ -297,6 +318,9 @@ $dump -quiet -s $tpr 2>>$err \
 		print pro, lig
 		while(getline < ndx) {
 			gsub(" ","", $1); gsub("\t","", $1)
+            # check __
+			if ("__"$1 == pro)    $1=pro
+			if ("__"$1 == pro"]") $1=pro"]"
 			if($1==pro)    for(i=3; i<=NF; i++) ndxPro[$i+0]++
 			if($1==pro"]") for(i=2; i<=NF; i++) ndxPro[$i+0]++
 			if(withLig) {
