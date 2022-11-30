@@ -29,7 +29,7 @@ echo -e "\
 --------------------------------------------------------------------------------
 >> Log:
    TODO:       parallel APBS, focus
-   2022-11-31: fix issues protein group name starts with a number, the bug from gromacs
+   2022-11-30: fix issues protein group name starts with a number, the bug from gromacs
                protein only bug
    2022-11-18: fix issues with non-continuous ndx
    2022-10-16: fix issue with ndx file
